@@ -11,23 +11,49 @@ import logging
 import threading
 import re
 import shutil
+import signal
+import sys
+import subprocess
+import configparser
+import schedule
+import time
+from filelock import FileLock
 
-# Define output directory for downloaded files
-# OUTPUT_DIR = "/scicomp/groups-pure/OID/NCEZID/DFWED/EDLB/projects/CIMS/HMAS_pilot/Incoming/test"
-OUTPUT_DIR = "/scicomp/groups-pure/OID/NCEZID/DFWED/EDLB/projects/CIMS/HMAS_pilot/dev/Incoming"
-# STEP_MOTHUR_OUTPUT_DIR = '/scicomp/groups-pure/OID/NCEZID/DFWED/EDLB/projects/CIMS/HMAS_pilot/sm_outputs/test'
-STEP_MOTHUR_OUTPUT_DIR = '/scicomp/groups-pure/OID/NCEZID/DFWED/EDLB/projects/CIMS/HMAS_pilot/dev/sm_outputs'
-EXTENSION = "fastq.gz"
-OLIGO_FILE = "/scicomp/groups-pure/OID/NCEZID/DFWED/EDLB/projects/CIMS/HMAS_pilot/step_mothur/HMAS-QC-Pipeline2/M3235_22_024.oligos"
-LOG_FILE = "step_mothur_log"
-STEP_MOTHUR = "/scicomp/groups-pure/OID/NCEZID/DFWED/EDLB/projects/CIMS/HMAS_pilot/step_mothur/HMAS-QC-Pipeline2/"
-PIPELINE_RUN_LOG_FILE = "stepmothur_download.log"
-SENT_TO = "qtl7@cdc.gov" # wwm8@cdc.gov"
-SPHL_CODE_LOG = "sphl_code_log"
+parser = argparse.ArgumentParser(description="Download FASTQ files from BaseSpace projects.")
+parser.add_argument("-c", "--config", required=True, help="Path to the config file")
+args = parser.parse_args()
+
+config = configparser.ConfigParser()
+config.read(args.config)
+
+OUTPUT_DIR = config["Settings"]["OUTPUT_DIR"]
+STEP_MOTHUR_OUTPUT_DIR = config["Settings"]["STEP_MOTHUR_OUTPUT_DIR"]
+EXTENSION = config["Settings"]["EXTENSION"]
+OLIGO_FILE = config["Settings"]["OLIGO_FILE"]
+LOG_FILE = config["Settings"]["LOG_FILE"]
+STEP_MOTHUR = config["Settings"]["STEP_MOTHUR"]
+PIPELINE_RUN_LOG_FILE = config["Settings"]["PIPELINE_RUN_LOG_FILE"]
+SENT_TO = config["Settings"]["SENT_TO"]
+SPHL_CODE_LOG = config["Settings"]["SPHL_CODE_LOG"]
 LOG_FILE_TMP = LOG_FILE + ".tmp"
+last_run_number = int(config.get("Settings", "last_run_number", fallback="100"))
+
+# log_lock = threading.Lock()  # Lock for updating the run counter
+log_lock = FileLock(LOG_FILE + ".lock")  # Lock file to prevent concurrent access
+
+
 
 # Initialize an empty dictionary
+'''
+create a dictionary from the SPHL_CODE_LOG
+owner_id, owner_name, state_code
+30888858        CIMS EDLB       JO
+21732711        ODH Lab OH
+58960902        NCSLPH HMAS     NC
+'''
 owner_code_dict = {}
+
+step_mothur_pipeline_success = False  # Track if step_mothur pipeline ran successfully
 
 # Read the file and populate the dictionary
 with open(SPHL_CODE_LOG, "r") as file:
@@ -38,10 +64,6 @@ with open(SPHL_CODE_LOG, "r") as file:
             owner_code_dict[owner_id] = code  
 
 
-log_lock = threading.Lock()  # Lock for updating the run counter
-# last_run_number = 99  # Default so the first assigned is 100
-last_run_number = 0
-
 # Configure logging
 logging.basicConfig(
     filename=PIPELINE_RUN_LOG_FILE,
@@ -49,6 +71,17 @@ logging.basicConfig(
     format="%(asctime)s - %(levelname)s - %(message)s",
     datefmt="%Y-%m-%d %H:%M:%S",
 )
+
+# handler method to clean up the matching record in the LOG_FILE, upon receiving
+# system interuption signal
+def create_cleanup_handler(project_name, project_id, run_id, owner_id):
+    def cleanup_and_exit(signum, frame):
+        if not step_mothur_pipeline_success:
+            logging.error("System shutdown detected. Cleaning up...")
+            delete_logged_project(project_name, project_id, run_id, owner_id)
+        sys.exit(1)
+
+    return cleanup_and_exit
 
 def get_next_run_id(sphl_code):
     """Safely retrieves and increments the highest runID in the log."""
@@ -63,14 +96,15 @@ def get_next_run_id(sphl_code):
                         continue  # Skip malformed lines
                     #expected format: project_name, project_id, run_id, owner_id, timestamp
                     run_id = row[2]  # Extract runID (3th column)
-                    match = re.search(r'(\d+)$', run_id)  # Extract numeric part
+                    match = re.search(r'(\d+)', run_id)  # Extract numeric part
                     if match:
                         try:
                             last_run_number = max(last_run_number, int(match.group(1)))
                         except ValueError:
+                            logging.error(f"invalid entry in {LOG_FILE}, {ValueError}")
                             continue  # Skip invalid entries
 
-        # Increment and generate new runID
+        # increment and generate new runID
         last_run_number += 1
         new_run_id = f"HMAS_{last_run_number:03}_{sphl_code}" #padding as 3-digits
 
@@ -82,7 +116,7 @@ def run_command(command):
         result = subprocess.run(command, shell=True, capture_output=True, text=True, check=True)
         return result.stdout.strip()
     except subprocess.CalledProcessError as e:
-        print(f"Error running command: {command}\n{e.stderr}")
+        logging.error(f"Error running command: {command}\n{e.stderr}")
         return None
 
 
@@ -102,7 +136,6 @@ def get_available_projects():
     for row in csv_reader:
         project_id = row["Id"]
         project_name = row["Name"]
-        # projects[project_id] = project_name
         owner_id = row["UserOwnedBy.Id"]
         owner_name = row["UserOwnedBy.Name"]
         projects[project_id] = (project_name, owner_id, owner_name)
@@ -116,7 +149,7 @@ def has_project_been_downloaded(project_name, project_id):
         return False
 
     with open(LOG_FILE, "r") as f:
-        downloaded_projects = {(line.strip().split("\t")[0], line.strip().split("\t")[1]) for line in f.readlines() if "\t" in line}
+        downloaded_projects = {(line.strip().split('\t')[0], line.strip().split('\t')[1]) for line in f.readlines() if '\t' in line}
 
     return (project_name, project_id) in downloaded_projects
 
@@ -132,6 +165,8 @@ def delete_logged_project(project_name, project_id, run_id, owner_id):
     with log_lock:  # Use the existing lock to ensure thread safety
         found = False
         try:
+            #we 'delete' it by copying the original log file over to a tmp file and skip
+            #any matching records, then replace the original log file with the tmp file
             with open(LOG_FILE, "r") as infile, open(LOG_FILE_TMP, "w") as outfile:
                 for line in infile:
                     fields = line.strip().split("\t")
@@ -169,7 +204,7 @@ def download_project_files(project_id, project_name, run_id):
     result = subprocess.run(command, shell=True)
 
     if result.returncode != 0:
-        print(f"Error: Download failed for project {project_name}.")
+        logging.error(f"Error: Download failed for project {project_name}.")
         return False
 
     return True
@@ -180,30 +215,26 @@ def download_and_run_stepmothur(project_name, owner_id, owner_name, project_id):
     if owner_id in owner_code_dict:
         sphl_code = owner_code_dict[owner_id]
     else:
-        send_mail = f"""mail -s "Test Subject {project_name}({project_id})"  {SENT_TO} <<EOF
-                            Hello,
+        body = f"""Hello,
 
-                            This is a test email.
+        ***WARNING***
+        {owner_id}/{owner_name} doesn't have a HMAS code in the {SPHL_CODE_LOG} file!
+        Hence {project_name}({project_id}) was not processed.
 
-                            ***WARNING***
-                            {owner_id}/{owner_name} doesn't have a HMAS code in the {SPHL_CODE_LOG} file!
-                            Hence {project_name}({project_id}) was not processed.
-
-                            Best,
-                            STEP_MOTHUR from CIMS 
-                            EOF
-                            """
+        Best,
+        STEP_MOTHUR from CIMS 
+        """
+        send_mail = f'echo -e "{body}" | mail -s "{project_name}({project_id})" {SENT_TO}'
         run_command(send_mail)
+
         logging.error(f"{owner_id}/{owner_name} doesn't have a HMAS code in the {SPHL_CODE_LOG} file!")
-        return
+        return False
 
     run_id = get_next_run_id(sphl_code)
     print(f"Downloading project {project_name}...")
     success = download_project_files(project_id, project_name, run_id)
 
-    # project_dir = os.path.abspath(os.path.join(OUTPUT_DIR, f"{project_name}_{project_id}"))
     project_dir = os.path.join(OUTPUT_DIR, f"{run_id}_{project_name}")
-    # output = os.path.join(STEP_MOTHUR_OUTPUT_DIR,f"{project_name}_{project_id}")
     output = os.path.join(STEP_MOTHUR_OUTPUT_DIR,f"{run_id}")
     current_dir = os.getcwd()
     command = (f" cd {STEP_MOTHUR} && "
@@ -213,34 +244,52 @@ def download_and_run_stepmothur(project_name, owner_id, owner_name, project_id):
                f"cd {current_dir}")
 
     if success:
-        log_downloaded_project(project_name, project_id, run_id, owner_id)
-        result = subprocess.run(command, shell=True)
-        if result.returncode == 0:  # Check if the command was successful
-            print(f"step_mothur is successful for {project_name}. Running {command}...")
-            # log_downloaded_project(project_name, project_id, run_id, owner_id)
+        try:
+            # Register signal handlers with correct parameters
+            cleanup_handler = create_cleanup_handler(project_name, project_id, run_id, owner_id)
+            signal.signal(signal.SIGTERM, cleanup_handler) #soft termination signal
+            signal.signal(signal.SIGINT, cleanup_handler) #Signal Interrupt Ctrl+C
+            signal.signal(signal.SIGHUP, cleanup_handler) #Signal Hangup, terminal disconnection
 
-            send_mail = f"""mail -s "Test Subject {project_name}({project_id})" -a {STEP_MOTHUR_OUTPUT_DIR}/{run_id}*/*.html  {SENT_TO} <<EOF
-                        Hello,
+            log_downloaded_project(project_name, project_id, run_id, owner_id)
+            result = subprocess.run(command, shell=True)
+            if result.returncode == 0:  # Check if the command was successful
+                global step_mothur_pipeline_success
+                step_mothur_pipeline_success = True
+                print(f"step_mothur is successful for {project_name}. Running {command}...")
 
-                        This is a test email.
-                        {project_name}({project_id}) has been successfully downloaded at:
-                        {OUTPUT_DIR}
-                        and step_mothur report can be found at:
-                        {STEP_MOTHUR_OUTPUT_DIR} , with run_id starting with {run_id}
+                body = f"""Hello,
 
-                        Best,
-                        STEP_MOTHUR from CIMS 
-                        EOF
-                        """
-            run_command(send_mail)
-        else:
-            print(f"step_mothur  failed for {project_name}. Skipping log update.")
-            ####  code here to delete the record ! log_downloaded_project(project_name, project_id, run_id, owner_id)
-            if not delete_logged_project(project_name, project_id, run_id, owner_id):
-                logging.error(f"Either {LOG_FILE} does not exist or ({project_name}, {project_id}, {run_id}, {owner_id}) is not in the record")
+                {project_name}({project_id}) has been successfully downloaded at:
+                {OUTPUT_DIR}
+
+                and step_mothur report can be found at:
+                {STEP_MOTHUR_OUTPUT_DIR} , with run_id starting with {run_id}
+
+                Best,
+                STEP_MOTHUR from CIMS 
+                """
+
+                send_mail = f'echo -e "{body}" | mail -s "{project_name}({project_id})" -a {STEP_MOTHUR_OUTPUT_DIR}/{run_id}*/*.html {SENT_TO}'
+                run_command(send_mail)
+
+            else:
+                print(f"step_mothur  failed for {project_name}. Skipping log update.")
+                if not delete_logged_project(project_name, project_id, run_id, owner_id):
+                    logging.error(f"Either {LOG_FILE} does not exist or ({project_name}, {project_id}, {run_id}, {owner_id}) is not in the record")
+
+                return False
+        finally:
+            if not step_mothur_pipeline_success:
+                if not delete_logged_project(project_name, project_id, run_id, owner_id):
+                    logging.error(f"In finally, . Either {LOG_FILE} does not exist or ({project_name}, {project_id}, {run_id}, {owner_id}) is not in the record")
+                    logging.warning(f"if there is System shutdown error above, ignore the step_mothur_log error")
+    
     else:
-        print(f"Download failed for {project_name}. Skipping execution of {command}.")
+        logging.error(f"Download failed for {project_name}. Skipping execution of {command}.")
+        return False
 
+    return True
 
 # Function to handle downloading and processing
 def process_project(project_id, project_name, owner_id, owner_name):
@@ -250,29 +299,26 @@ def process_project(project_id, project_name, owner_id, owner_name):
 
     logging.info(f"Starting download for project {project_name} (ID: {project_id})")
     try:
-        download_and_run_stepmothur(project_name, owner_id, owner_name, project_id)
-        logging.info(f"Successfully downloaded and processed {project_name} (ID: {project_id})")
+        if download_and_run_stepmothur(project_name, owner_id, owner_name, project_id):
+            logging.info(f"Successfully downloaded and processed {project_name} (ID: {project_id})")
     except Exception as e:
         logging.error(f"Error processing project {project_name} (ID: {project_id}): {e}")
 
-# Number of concurrent downloads (adjust as needed)
-MAX_WORKERS = 3  
+# # Number of concurrent downloads (adjust as needed)
+# # switch off multi-threading because 'signal' only works in the main thread !
+# MAX_WORKERS = 3  
 
 def main():
     """this script can be run as: 
-    python bscli_fq_downloader.py, this will check for all new projects under your account, and will
-    download and run step_mothur on those new projects (once that's successfully completed, the project
-    name will be written into LOG_FILE, and those projects will not be NEW anymore)
-    or it be run as:
-    python bscli_fq_downloader.py --project-id 00000, this will be checked to see if it's a valid project ID
-    under your account and if it's a 'new' project. If yes to both, it will be downloaded and run through 
-    step_mothur"""
-    parser = argparse.ArgumentParser(description="Download FASTQ files from BaseSpace projects.")
-    parser.add_argument(
-        "--project-id",
-        help="Optional Project ID to download. If not provided, the script checks for new projects automatically.",
-    )
-    args = parser.parse_args()
+    python bscli_fq_downloader.py -c config.ini
+    it reads all required parameters from the config.ini file
+    there are 2 ways to run the pipeline:
+    1. if you give it an valid project_id in the config.ini file, the pipeline will check to see if it's a valid project ID
+    under your account and if it's a 'new' project. If yes to both, the project will be downloaded and run through step_mothur
+    2. leave the project_id empty and the pipeline will scan your basespace account, download/analyze all
+    available projects
+    """
+    project_id = config["Settings"]["project_id"]
 
     print("Fetching available projects...")
     projects = get_available_projects()
@@ -282,34 +328,76 @@ def main():
         return
 
     # If a specific project ID is provided
-    if args.project_id:
-        if args.project_id not in projects:
-            print(f"Error: Project ID {args.project_id} not found.")
+    if project_id:
+        if project_id not in projects:
+            logging.error(f"Error: Project ID {project_id} not found.")
             return
         
-        project_name, owner_id, owner_name = projects[args.project_id]
+        project_name, owner_id, owner_name = projects[project_id]
 
-        if has_project_been_downloaded(project_name, args.project_id):
-            print(f"Project {project_name}/{args.project_id} was already downloaded. Skipping.")
+        if has_project_been_downloaded(project_name, project_id):
+            print(f"Project {project_name}/{project_id} was already downloaded. Skipping.")
             return
         
-        download_and_run_stepmothur(project_name, owner_id, owner_name, args.project_id)
+        download_and_run_stepmothur(project_name, owner_id, owner_name, project_id)
 
         return
 
-    # otherwise, download and run new projects simultaneously
-    with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
-        futures = {executor.submit(process_project, project_id, project_name, owner_id, owner_name): project_name 
-                   for project_id, (project_name, owner_id, owner_name) in projects.items()}
+    # # otherwise, download and run new projects simultaneously
+    # with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+    #     futures = {executor.submit(process_project, project_id, project_name, owner_id, owner_name): project_name 
+    #                for project_id, (project_name, owner_id, owner_name) in projects.items()}
 
-    # Wait for all tasks to complete
-    for future in concurrent.futures.as_completed(futures):
-        project_name = futures[future]
-        try:
-            future.result()  # Check for errors
-        except Exception as e:
-            logging.error(f"Unhandled error in processing {project_name}: {e}")
+    # # Wait for all tasks to complete
+    # for future in concurrent.futures.as_completed(futures):
+    #     project_name = futures[future]
+    #     try:
+    #         future.result()  # Check for errors
+    #     except Exception as e:
+    #         logging.error(f"Unhandled error in processing {project_name}: {e}")
 
+    for project_id, (project_name, owner_id, owner_name) in projects.items(): 
+        process_project(project_id, project_name, owner_id, owner_name)
 
 if __name__ == "__main__":
-    main()
+
+    scheduled_time = config["Settings"].get("scheduled_time", "")
+
+    # Split the string into a list of times
+    time_list = scheduled_time.split()
+    # Function to check and convert time_str into datetime object
+    def valid_time(time_str):
+        try:
+            # Attempt to parse the time string
+            datetime.strptime(time_str, "%H:%M")
+            return time_str
+        except ValueError:
+            # Raise an error if the time format is invalid
+            raise ValueError(f"Invalid time format: {time_str}. Expected HH:MM (24-hour).")
+
+    # Convert each time to a datetime object, handling invalid times
+    parsed_scheduled_time = []
+    for time_str in time_list:
+        try:
+            parsed_time = valid_time(time_str)
+            parsed_scheduled_time.append(parsed_time)
+        except ValueError as e:
+            logging.error(e) 
+            print(e)
+            sys.exit(1)
+
+    # we have set up time slots to run the pipeline continuously
+    if parsed_scheduled_time:
+
+        # Schedule tasks based on command-line input
+        for t in parsed_scheduled_time:
+            print(f"running {os.path.basename(__file__)} at {t}")
+            schedule.every().day.at(t).do(main)
+
+        # Keep the script running to handle the scheduled tasks
+        while True:
+            schedule.run_pending()  # Check for pending tasks to run
+            time.sleep(60)  # Wait for 1 minute before checking again
+
+    else: #or it's just a one-off
+        main()
