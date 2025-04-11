@@ -29,7 +29,11 @@ python bscli_fq_downloader.py -c config.ini
 #### note:  
 -  record in `step_mothur_log` is formatted as: project_name, project_id, run_id, owner_id, timestamp. 
 -  `run_id` is formatted as: HMAS_{last_run_number: 3-digit padding}_{sphl_code}, `sphl_code` need to exist in `SPHL_CODE_LOG`, or the script will stop and notify you thourh an email.  
--  there are a few configuration variables with default values in the beginning of the script, which need to be updated when running in a different environment.  
+-  there are a few configuration variables with default values in the beginning of the script, which need to be updated when running in a different environment.   
+
+Add the flowchart for the pipeline.  
+
+<p align="center"><img src="BD_SM_flowchart.svg" alt="BD_SM_pipeline" width="750"></p>   
 
 
 ### Prerequisites
