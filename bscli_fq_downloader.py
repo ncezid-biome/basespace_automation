@@ -11,7 +11,7 @@ import logging
 import threading
 import re
 import shutil
-import signal
+# import signal
 import sys
 import subprocess
 import configparser
@@ -41,7 +41,7 @@ last_run_number = int(config.get("Settings", "last_run_number", fallback="100"))
 # log_lock = threading.Lock()  # Lock for updating the run counter
 log_lock = FileLock(LOG_FILE + ".lock")  # Lock file to prevent concurrent access
 
-
+SM_RUN_SUCCESS = "SM_PASS"
 
 # Initialize an empty dictionary
 '''
@@ -53,7 +53,7 @@ owner_id, owner_name, state_code
 '''
 owner_code_dict = {}
 
-step_mothur_pipeline_success = False  # Track if step_mothur pipeline ran successfully
+# step_mothur_pipeline_success = False  # Track if step_mothur pipeline ran successfully
 
 # Read the file and populate the dictionary
 with open(SPHL_CODE_LOG, "r") as file:
@@ -72,16 +72,16 @@ logging.basicConfig(
     datefmt="%Y-%m-%d %H:%M:%S",
 )
 
-# handler method to clean up the matching record in the LOG_FILE, upon receiving
-# system interuption signal
-def create_cleanup_handler(project_name, project_id, run_id, owner_id):
-    def cleanup_and_exit(signum, frame):
-        if not step_mothur_pipeline_success:
-            logging.error("System shutdown detected. Cleaning up...")
-            delete_logged_project(project_name, project_id, run_id, owner_id)
-        sys.exit(1)
+# # handler method to clean up the matching record in the LOG_FILE, upon receiving
+# # system interuption signal
+# def create_cleanup_handler(project_name, project_id, run_id, owner_id):
+#     def cleanup_and_exit(signum, frame):
+#         if not step_mothur_pipeline_success:
+#             logging.error("System shutdown detected. Cleaning up...")
+#             update_logged_project(project_name, project_id, run_id, owner_id)
+#         sys.exit(1)
 
-    return cleanup_and_exit
+#     return cleanup_and_exit
 
 def get_next_run_id(sphl_code):
     """Safely retrieves and increments the highest runID in the log."""
@@ -92,9 +92,9 @@ def get_next_run_id(sphl_code):
             with open(LOG_FILE, "r") as f:
                 reader = csv.reader(f, delimiter="\t")
                 for row in reader:
-                    if len(row) < 5:
-                        continue  # Skip malformed lines
-                    #expected format: project_name, project_id, run_id, owner_id, timestamp
+                    if not row:  # skip empty lines
+                        continue
+                    #expected format: project_name, project_id, run_id, owner_id, timestamp, SM_STATUS
                     run_id = row[2]  # Extract runID (3th column)
                     match = re.search(r'(\d+)', run_id)  # Extract numeric part
                     if match:
@@ -144,35 +144,78 @@ def get_available_projects():
 
 
 def has_project_been_downloaded(project_name, project_id): 
-    """Checks if the project with the given ID has already been logged in step_mothur_log."""
+    """Checks if the project with the given ID has already been logged in step_mothur_log.
+        return (True, None), if the project was already downloaded and SM run was successful (SM_RUN_SUCCESS)
+        return (False, run_id), if the project was already downloaded but SM run failed (not status for SM_RUN)
+        return (False, None), if the project was NOT downloaded
+    """
     if not os.path.exists(LOG_FILE):
-        return False
+        logging.error(f"Can't find the {LOG_FILE}")
+        sys.exit(1)
+
+    # with open(LOG_FILE, "r") as f:
+    #     downloaded_projects = {(line.strip().split('\t')[0], line.strip().split('\t')[1]) for line in f.readlines() if '\t' in line}
 
     with open(LOG_FILE, "r") as f:
-        downloaded_projects = {(line.strip().split('\t')[0], line.strip().split('\t')[1]) for line in f.readlines() if '\t' in line}
+            downloaded_projects = [
+                (line.strip().split('\t')[0], line.strip().split('\t')[1], line.strip().split('\t')[2], line.strip().split('\t')[5] if len(line.strip().split('\t')) > 5 else None)
+                for line in f.readlines() if '\t' in line
+            ]
+    
+    for project in downloaded_projects:
+        if project[0] == project_name and project[1] == project_id:
+            # Check if the 6th column exists and is not None
+            if project[3] is not None:
+                return (True, None)  # if the project was already downloaded and SM run was successful (SM_RUN_SUCCESS)
+            else:
+                return (False, project[2])  # if the project was already downloaded but SM run failed, return the run_id
+    
+    return (False, None)  # If project is not found
+    # return (project_name, project_id) in downloaded_projects
 
-    return (project_name, project_id) in downloaded_projects
 
+# def log_downloaded_project(project_name, project_id, run_id, owner_id):
+#     """Logs the downloaded project name and timestamp to step_mothur_log."""
+#     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+#     with open(LOG_FILE, "a") as f:
+#         f.write(f"{project_name}\t{project_id}\t{run_id}\t{owner_id}\t{timestamp}\n")
 
 def log_downloaded_project(project_name, project_id, run_id, owner_id):
-    """Logs the downloaded project name and timestamp to step_mothur_log."""
+    """Appends a log entry only if it doesn't already exist, using atomic file replacement."""
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    with open(LOG_FILE, "a") as f:
-        f.write(f"{project_name}\t{project_id}\t{run_id}\t{owner_id}\t{timestamp}\n")
+    new_line = f"{project_name}\t{project_id}\t{run_id}\t{owner_id}\t{timestamp}\n"
+    updated = False
 
-def delete_logged_project(project_name, project_id, run_id, owner_id):
-    """Safely deletes a record from the log file while handling concurrent access."""
+    with log_lock:
+        with open(LOG_FILE, "r") as infile, open(LOG_FILE_TMP, "w") as outfile:
+            for line in infile:
+                parts = line.strip().split("\t")
+                if parts[:4] == [project_name, project_id, run_id, owner_id]:
+                    outfile.write(new_line)  # update timestamp
+                    updated = True
+                else:
+                    outfile.write(line)
+        if not updated:
+            with open(LOG_FILE_TMP, "a") as outfile:
+                outfile.write(new_line)
+        shutil.move(LOG_FILE_TMP, LOG_FILE)  # Atomic replacement
+
+
+def update_logged_project(project_name, project_id, run_id, owner_id):
+    """Safely updates a record from the log file while handling concurrent access."""
     with log_lock:  # Use the existing lock to ensure thread safety
         found = False
         try:
-            #we 'delete' it by copying the original log file over to a tmp file and skip
+            #we 'update' it by copying the original log file over to a tmp file and skip
             #any matching records, then replace the original log file with the tmp file
             with open(LOG_FILE, "r") as infile, open(LOG_FILE_TMP, "w") as outfile:
                 for line in infile:
                     fields = line.strip().split("\t")
                     if len(fields) >= 4 and fields[:4] == [project_name, project_id, run_id, owner_id]:
                         found = True
-                        continue  # Skip writing this line (deleting it)
+                        # continue  # Skip writing this line (deleting it)
+                        fields.append('SM_PASS')
+                        line = '\t'.join(fields) + '\n'
                     outfile.write(line)
 
             if found:
@@ -209,7 +252,7 @@ def download_project_files(project_id, project_name, run_id):
 
     return True
 
-def download_and_run_stepmothur(project_name, owner_id, owner_name, project_id):
+def download_and_run_stepmothur(project_name, owner_id, owner_name, project_id, run_id=None):
 
     #check if there is already a code for the owner in SPHL_CODE_LOG
     if owner_id in owner_code_dict:
@@ -230,7 +273,9 @@ def download_and_run_stepmothur(project_name, owner_id, owner_name, project_id):
         logging.error(f"{owner_id}/{owner_name} doesn't have a HMAS code in the {SPHL_CODE_LOG} file!")
         return False
 
-    run_id = get_next_run_id(sphl_code)
+    if not run_id: #if we don't have a run_id yet
+        run_id = get_next_run_id(sphl_code)
+
     print(f"Downloading project {project_name}...")
     success = download_project_files(project_id, project_name, run_id)
 
@@ -244,47 +289,48 @@ def download_and_run_stepmothur(project_name, owner_id, owner_name, project_id):
                f"cd {current_dir}")
 
     if success:
-        try:
-            # Register signal handlers with correct parameters
-            cleanup_handler = create_cleanup_handler(project_name, project_id, run_id, owner_id)
-            signal.signal(signal.SIGTERM, cleanup_handler) #soft termination signal
-            signal.signal(signal.SIGINT, cleanup_handler) #Signal Interrupt Ctrl+C
-            signal.signal(signal.SIGHUP, cleanup_handler) #Signal Hangup, terminal disconnection
+        # try:
+        # # Register signal handlers with correct parameters
+        # cleanup_handler = create_cleanup_handler(project_name, project_id, run_id, owner_id)
+        # signal.signal(signal.SIGTERM, cleanup_handler) #soft termination signal
+        # signal.signal(signal.SIGINT, cleanup_handler) #Signal Interrupt Ctrl+C
+        # signal.signal(signal.SIGHUP, cleanup_handler) #Signal Hangup, terminal disconnection
 
-            log_downloaded_project(project_name, project_id, run_id, owner_id)
-            result = subprocess.run(command, shell=True)
-            if result.returncode == 0:  # Check if the command was successful
-                global step_mothur_pipeline_success
-                step_mothur_pipeline_success = True
-                print(f"step_mothur is successful for {project_name}. Running {command}...")
+        log_downloaded_project(project_name, project_id, run_id, owner_id)
+        result = subprocess.run(command, shell=True)
+        if result.returncode == 0:  # Check if the command was successful
+            if not update_logged_project(project_name, project_id, run_id, owner_id): #update log with SM_PASS
+                logging.error(f"Either {LOG_FILE} does not exist or ({project_name}, {project_id}, {run_id}, {owner_id}) is not in the record")
 
-                body = f"""Hello,
+            # global step_mothur_pipeline_success
+            # step_mothur_pipeline_success = True
+            print(f"step_mothur is successful for {project_name}. Running {command}...")
 
-                {project_name}({project_id}) has been successfully downloaded at:
-                {OUTPUT_DIR}
+            body = f"""Hello,
 
-                and step_mothur report can be found at:
-                {STEP_MOTHUR_OUTPUT_DIR} , with run_id starting with {run_id}
+            {project_name}({project_id}) has been successfully downloaded at:
+            {OUTPUT_DIR}
 
-                Best,
-                STEP_MOTHUR from CIMS 
-                """
+            and step_mothur report can be found at:
+            {STEP_MOTHUR_OUTPUT_DIR} , with run_id starting with {run_id}
 
-                send_mail = f'echo -e "{body}" | mail -s "{project_name}({project_id})" -a {STEP_MOTHUR_OUTPUT_DIR}/{run_id}*/*.html {SENT_TO}'
-                run_command(send_mail)
+            Best,
+            STEP_MOTHUR from CIMS 
+            """
 
-            else:
-                print(f"step_mothur  failed for {project_name}. Skipping log update.")
-                if not delete_logged_project(project_name, project_id, run_id, owner_id):
-                    logging.error(f"Either {LOG_FILE} does not exist or ({project_name}, {project_id}, {run_id}, {owner_id}) is not in the record")
+            send_mail = f'echo -e "{body}" | mail -s "{project_name}({project_id})" -a {STEP_MOTHUR_OUTPUT_DIR}/{run_id}*/*.html {SENT_TO}'
+            run_command(send_mail)
 
-                return False
-        finally:
-            if not step_mothur_pipeline_success:
-                if not delete_logged_project(project_name, project_id, run_id, owner_id):
-                    logging.error(f"In finally, . Either {LOG_FILE} does not exist or ({project_name}, {project_id}, {run_id}, {owner_id}) is not in the record")
-                    logging.warning(f"if there is System shutdown error above, ignore the step_mothur_log error")
-    
+        else:
+            print(f"step_mothur  failed for {project_name}. Skipping log update.")
+            logging.error(f"step_mothur  failed for {project_name}. Skipping log update.")
+            return False
+    # finally:
+    #     if not step_mothur_pipeline_success:
+    #         if not update_logged_project(project_name, project_id, run_id, owner_id):
+    #             logging.error(f"In finally, . Either {LOG_FILE} does not exist or ({project_name}, {project_id}, {run_id}, {owner_id}) is not in the record")
+    #             logging.warning(f"if there is System shutdown error above, ignore the step_mothur_log error")
+
     else:
         logging.error(f"Download failed for {project_name}. Skipping execution of {command}.")
         return False
@@ -293,20 +339,23 @@ def download_and_run_stepmothur(project_name, owner_id, owner_name, project_id):
 
 # Function to handle downloading and processing
 def process_project(project_id, project_name, owner_id, owner_name):
-    if has_project_been_downloaded(project_name, project_id):
+
+    status, run_id = has_project_been_downloaded(project_name, project_id)
+    if status: #already downloaded and SM run was successful
         logging.info(f"Project {project_name} already downloaded. Skipping.")
         return
 
     logging.info(f"Starting download for project {project_name} (ID: {project_id})")
     try:
-        if download_and_run_stepmothur(project_name, owner_id, owner_name, project_id):
+        if download_and_run_stepmothur(project_name, owner_id, owner_name, project_id, run_id):
             logging.info(f"Successfully downloaded and processed {project_name} (ID: {project_id})")
     except Exception as e:
-        logging.error(f"Error processing project {project_name} (ID: {project_id}): {e}")
+        # logging.error(f"Error processing project {project_name} (ID: {project_id}): {e}")
+        logging.error(f"Error processing project {project_name} (ID: {project_id})", exc_info=True)
 
-# # Number of concurrent downloads (adjust as needed)
-# # switch off multi-threading because 'signal' only works in the main thread !
-# MAX_WORKERS = 3  
+# Number of concurrent downloads (adjust as needed)
+# switch off multi-threading because 'signal' only works in the main thread !
+MAX_WORKERS = 3  
 
 def main():
     """this script can be run as: 
@@ -334,30 +383,25 @@ def main():
             return
         
         project_name, owner_id, owner_name = projects[project_id]
-
-        if has_project_been_downloaded(project_name, project_id):
-            print(f"Project {project_name}/{project_id} was already downloaded. Skipping.")
-            return
-        
-        download_and_run_stepmothur(project_name, owner_id, owner_name, project_id)
+        process_project(project_id, project_name, owner_id, owner_name)
 
         return
 
-    # # otherwise, download and run new projects simultaneously
-    # with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
-    #     futures = {executor.submit(process_project, project_id, project_name, owner_id, owner_name): project_name 
-    #                for project_id, (project_name, owner_id, owner_name) in projects.items()}
+    # otherwise, download and run new projects simultaneously
+    with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+        futures = {executor.submit(process_project, project_id, project_name, owner_id, owner_name): project_name 
+                   for project_id, (project_name, owner_id, owner_name) in projects.items()}
 
-    # # Wait for all tasks to complete
-    # for future in concurrent.futures.as_completed(futures):
-    #     project_name = futures[future]
-    #     try:
-    #         future.result()  # Check for errors
-    #     except Exception as e:
-    #         logging.error(f"Unhandled error in processing {project_name}: {e}")
+    # Wait for all tasks to complete
+    for future in concurrent.futures.as_completed(futures):
+        project_name = futures[future]
+        try:
+            future.result()  # Check for errors
+        except Exception as e:
+            logging.error(f"Unhandled error in processing {project_name}: {e}")
 
-    for project_id, (project_name, owner_id, owner_name) in projects.items(): 
-        process_project(project_id, project_name, owner_id, owner_name)
+    # for project_id, (project_name, owner_id, owner_name) in projects.items(): 
+    #     process_project(project_id, project_name, owner_id, owner_name)
 
 if __name__ == "__main__":
 
@@ -383,7 +427,6 @@ if __name__ == "__main__":
             parsed_scheduled_time.append(parsed_time)
         except ValueError as e:
             logging.error(e) 
-            print(e)
             sys.exit(1)
 
     # we have set up time slots to run the pipeline continuously
