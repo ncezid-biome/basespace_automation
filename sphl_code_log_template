@@ -1,0 +1,5 @@
+#this is a 3 column tab delimited text file
+#it does not have any headers (remove the first 2 rows)
+11111111    owner name1 codename_1
+22222222    owner name2 codename_2
+

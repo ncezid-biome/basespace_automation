@@ -214,7 +214,7 @@ def update_logged_project(project_name, project_id, run_id, owner_id):
                     if len(fields) >= 4 and fields[:4] == [project_name, project_id, run_id, owner_id]:
                         found = True
                         # continue  # Skip writing this line (deleting it)
-                        fields.append('SM_PASS')
+                        fields.append(SM_RUN_SUCCESS)
                         line = '\t'.join(fields) + '\n'
                     outfile.write(line)
 
@@ -322,8 +322,8 @@ def download_and_run_stepmothur(project_name, owner_id, owner_name, project_id, 
             run_command(send_mail)
 
         else:
-            print(f"step_mothur  failed for {project_name}. Skipping log update.")
-            logging.error(f"step_mothur  failed for {project_name}. Skipping log update.")
+            print(f"step_mothur  failed for {project_name}. Running {command}... \n  Skipping log update.")
+            logging.error(f"step_mothur  failed for {project_name}. Running {command}... \n Skipping log update.")
             return False
     # finally:
     #     if not step_mothur_pipeline_success:
