@@ -26,17 +26,25 @@ args = parser.parse_args()
 config = configparser.ConfigParser()
 config.read(args.config)
 
-OUTPUT_DIR = config["Settings"]["OUTPUT_DIR"]
-STEP_MOTHUR_OUTPUT_DIR = config["Settings"]["STEP_MOTHUR_OUTPUT_DIR"]
+# OUTPUT_DIR = config["Settings"]["OUTPUT_DIR"]
+# STEP_MOTHUR_OUTPUT_DIR = config["Settings"]["STEP_MOTHUR_OUTPUT_DIR"]
+OUTPUT_DIR = config["Settings"].get("OUTPUT_DIR", os.getcwd())
+STEP_MOTHUR_OUTPUT_DIR = config["Settings"].get("STEP_MOTHUR_OUTPUT_DIR", os.getcwd())
+
 EXTENSION = config["Settings"]["EXTENSION"]
 OLIGO_FILE = config["Settings"]["OLIGO_FILE"]
 LOG_FILE = config["Settings"]["LOG_FILE"]
 STEP_MOTHUR = config["Settings"]["STEP_MOTHUR"]
 PIPELINE_RUN_LOG_FILE = config["Settings"]["PIPELINE_RUN_LOG_FILE"]
-SENT_TO = config["Settings"]["SENT_TO"]
 SPHL_CODE_LOG = config["Settings"]["SPHL_CODE_LOG"]
 LOG_FILE_TMP = LOG_FILE + ".tmp"
 last_run_number = int(config.get("Settings", "last_run_number", fallback="100"))
+# Number of concurrent downloads (adjust as needed)
+MAX_WORKERS = int(config.get("Settings", "max_workers", fallback="2"))
+
+SENT_TO = config["Email"]["SENT_TO"]
+subject_template = config['Email']['subject']
+body_template = config['Email']['body']
 
 # log_lock = threading.Lock()  # Lock for updating the run counter
 log_lock = FileLock(LOG_FILE + ".lock")  # Lock file to prevent concurrent access
@@ -306,19 +314,23 @@ def download_and_run_stepmothur(project_name, owner_id, owner_name, project_id, 
             # step_mothur_pipeline_success = True
             print(f"step_mothur is successful for {project_name}. Running {command}...")
 
-            body = f"""Hello,
+            subject = subject_template.format(project_name=project_name, project_id=project_id)
+            body = body_template.format(project_name=project_name, project_id=project_id, HMAS_RUN_ID=run_id)
 
-            {project_name}({project_id}) has been successfully downloaded at:
-            {OUTPUT_DIR}
+            # body = f"""Hello,
 
-            and step_mothur report can be found at:
-            {STEP_MOTHUR_OUTPUT_DIR} , with run_id starting with {run_id}
+            # {project_name}({project_id}) has been successfully downloaded at:
+            # {OUTPUT_DIR}
 
-            Best,
-            STEP_MOTHUR from CIMS 
-            """
+            # and step_mothur report can be found at:
+            # {STEP_MOTHUR_OUTPUT_DIR} , with run_id starting with {run_id}
 
-            send_mail = f'echo -e "{body}" | mail -s "{project_name}({project_id})" -a {STEP_MOTHUR_OUTPUT_DIR}/{run_id}*/*.html {SENT_TO}'
+            # Best,
+            # STEP_MOTHUR from CIMS 
+            # """
+
+            # send_mail = f'echo -e "{body}" | mail -s "{project_name}({project_id})" -a {STEP_MOTHUR_OUTPUT_DIR}/{run_id}*/*.html {SENT_TO}'
+            send_mail = f'echo -e "{body}" | mail -s "{subject}" {SENT_TO}'
             run_command(send_mail)
 
         else:
@@ -353,9 +365,6 @@ def process_project(project_id, project_name, owner_id, owner_name):
         # logging.error(f"Error processing project {project_name} (ID: {project_id}): {e}")
         logging.error(f"Error processing project {project_name} (ID: {project_id})", exc_info=True)
 
-# Number of concurrent downloads (adjust as needed)
-# switch off multi-threading because 'signal' only works in the main thread !
-MAX_WORKERS = 3  
 
 def main():
     """this script can be run as: 
