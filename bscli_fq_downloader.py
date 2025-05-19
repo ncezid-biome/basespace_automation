@@ -18,6 +18,8 @@ import configparser
 import schedule
 import time
 from filelock import FileLock
+import glob
+import zipfile
 
 parser = argparse.ArgumentParser(description="Download FASTQ files from BaseSpace projects.")
 parser.add_argument("-c", "--config", required=True, help="Path to the config file")
@@ -315,7 +317,9 @@ def download_and_run_stepmothur(project_name, owner_id, owner_name, project_id, 
             print(f"step_mothur is successful for {project_name}. Running {command}...")
 
             subject = subject_template.format(project_name=project_name, project_id=project_id)
-            body = body_template.format(project_name=project_name, project_id=project_id, HMAS_RUN_ID=run_id)
+            # body = body_template.format(project_name=project_name, project_id=project_id, HMAS_RUN_ID=run_id)
+            # body = body_template.format(project_name=project_name, project_id=project_id, HMAS_RUN_ID=run_id,
+            #                             OUTPUT_DIR=project_dir, STEP_MOTHUR_OUTPUT_DIR=output )
 
             # body = f"""Hello,
 
@@ -330,7 +334,42 @@ def download_and_run_stepmothur(project_name, owner_id, owner_name, project_id, 
             # """
 
             # send_mail = f'echo -e "{body}" | mail -s "{project_name}({project_id})" -a {STEP_MOTHUR_OUTPUT_DIR}/{run_id}*/*.html {SENT_TO}'
-            send_mail = f'echo -e "{body}" | mail -s "{subject}" {SENT_TO}'
+            # send_mail = f'echo -e "{body}" | mail -s "{subject}" {SENT_TO}'
+
+            # Find all matching directories
+            matching_dirs = glob.glob(os.path.join(STEP_MOTHUR_OUTPUT_DIR, f"{run_id}*"))
+
+            # Filter to only directories
+            matching_dirs = [d for d in matching_dirs if os.path.isdir(d)]
+
+            # Sort directories by the timestamp in the folder name
+            def extract_timestamp(path):
+                basename = os.path.basename(path)
+                try:
+                    ts = basename.split('_')[-2] + basename.split('_')[-1]
+                    return datetime.strptime(ts, "%Y%m%d%H%M%S")
+                except (IndexError, ValueError):
+                    return datetime.min  # Treat invalid as oldest
+
+            matching_dirs.sort(key=extract_timestamp, reverse=True)
+
+            # Take the latest directory and find the HTML file
+            latest_dir = matching_dirs[0] if matching_dirs else None
+            html_file = None
+            if latest_dir:
+                html_files = glob.glob(os.path.join(latest_dir, "*.html"))
+                if html_files:
+                    html_file = html_files[0]  # or handle multiple matches
+
+            # Create ZIP file (flat structure)
+            zip_filename = os.path.join(latest_dir, f"{run_id}_report.zip")
+            with zipfile.ZipFile(zip_filename, 'w', zipfile.ZIP_DEFLATED) as zipf:
+                zipf.write(html_file, arcname=os.path.basename(html_file))
+
+            body = body_template.format(project_name=project_name, project_id=project_id, HMAS_RUN_ID=run_id,
+                                        OUTPUT_DIR=project_dir, STEP_MOTHUR_OUTPUT_DIR=latest_dir )
+
+            send_mail = f'echo -e "{body}" | mail -s "{project_name}({project_id})" -a "{zip_filename}" {SENT_TO}'
             run_command(send_mail)
 
         else:
