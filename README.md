@@ -18,6 +18,12 @@ This script checks for new projects under your BaseSpace account, downloads them
 #### Usage:
 
 ```sh
+cp config.ini.template config.ini
+
+update necessary path variables in config.ini
+```
+
+```sh
 python bscli_fq_downloader.py -c config.ini
 ```
 
