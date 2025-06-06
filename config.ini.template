@@ -15,7 +15,10 @@ OLIGO_FILE = /path/to/primer_panel_file
 LOG_FILE = step_mothur_log
 
 #location for our step_mothur pipeline
-#STEP_MOTHUR = /path/to/step_mothur_pipeline
+STEP_MOTHUR = /path/to/step_mothur_pipeline
+# main step mothur run commands (without the parameters). need ml java to load the latest version java to be 
+# compatible with running nextflow in Scicomp
+STEP_MOTHUR_COMMAND = ml java && nextflow run hmas2.nf -profile singularity
 # running log file for this pipeline
 PIPELINE_RUN_LOG_FILE = stepmothur_download.log
 
