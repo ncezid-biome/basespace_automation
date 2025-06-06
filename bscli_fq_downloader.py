@@ -37,6 +37,7 @@ EXTENSION = config["Settings"]["EXTENSION"]
 OLIGO_FILE = config["Settings"]["OLIGO_FILE"]
 LOG_FILE = config["Settings"]["LOG_FILE"]
 STEP_MOTHUR = config["Settings"]["STEP_MOTHUR"]
+STEP_MOTHUR_COMMAND = config["Settings"]["STEP_MOTHUR_COMMAND"]
 PIPELINE_RUN_LOG_FILE = config["Settings"]["PIPELINE_RUN_LOG_FILE"]
 SPHL_CODE_LOG = config["Settings"]["SPHL_CODE_LOG"]
 LOG_FILE_TMP = LOG_FILE + ".tmp"
@@ -293,7 +294,7 @@ def download_and_run_stepmothur(project_name, owner_id, owner_name, project_id, 
     output = os.path.join(STEP_MOTHUR_OUTPUT_DIR,f"{run_id}")
     current_dir = os.getcwd()
     command = (f" cd {STEP_MOTHUR} && "
-               f"nextflow run hmas2.nf --primer {OLIGO_FILE}  "
+               f"{STEP_MOTHUR_COMMAND} --primer {OLIGO_FILE}  "
                f"--reads {project_dir} "
                f"--outdir {output} && stty erase ^H && stty erase ^? && "
                f"cd {current_dir}")
