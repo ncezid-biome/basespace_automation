@@ -11,7 +11,6 @@ import logging
 import threading
 import re
 import shutil
-# import signal
 import sys
 import subprocess
 import configparser
@@ -20,86 +19,69 @@ import time
 from filelock import FileLock
 import glob
 import zipfile
+import functools
 
-parser = argparse.ArgumentParser(description="Download FASTQ files from BaseSpace projects.")
-parser.add_argument("-c", "--config", required=True, help="Path to the config file")
-args = parser.parse_args()
+def load_owner_code_dict(sphl_code_log_path):
+    """Read SPHL_CODE_LOG file and build a lookup dictionary.
+    create a dictionary from the SPHL_CODE_LOG
+    owner_id, owner_name, state_code
+    30888858        CIMS EDLB       JO
+    21732711        ODH Lab OH
+    58960902        NCSLPH HMAS     NC
+    """
+    owner_code_dict = {}
+    with open(sphl_code_log_path, "r") as file:
+        for line in file:
+            parts = line.strip().split("\t")
+            if len(parts) >= 3:
+                owner_id, _, code = parts
+                owner_code_dict[owner_id] = code
+    return owner_code_dict
 
-config = configparser.ConfigParser()
-config.read(args.config)
+def configure_logging(log_file_path):
+    logging.basicConfig(
+        filename=log_file_path,
+        level=logging.INFO,
+        format="%(asctime)s - %(levelname)s - %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    )
 
-# OUTPUT_DIR = config["Settings"]["OUTPUT_DIR"]
-# STEP_MOTHUR_OUTPUT_DIR = config["Settings"]["STEP_MOTHUR_OUTPUT_DIR"]
-OUTPUT_DIR = config["Settings"].get("OUTPUT_DIR", os.getcwd())
-STEP_MOTHUR_OUTPUT_DIR = config["Settings"].get("STEP_MOTHUR_OUTPUT_DIR", os.getcwd())
+def load_config(config_path):
+    config = configparser.ConfigParser()
+    config.read(config_path)
 
-EXTENSION = config["Settings"]["EXTENSION"]
-OLIGO_FILE = config["Settings"]["OLIGO_FILE"]
-LOG_FILE = config["Settings"]["LOG_FILE"]
-STEP_MOTHUR = config["Settings"]["STEP_MOTHUR"]
-PIPELINE_RUN_LOG_FILE = config["Settings"]["PIPELINE_RUN_LOG_FILE"]
-SPHL_CODE_LOG = config["Settings"]["SPHL_CODE_LOG"]
-LOG_FILE_TMP = LOG_FILE + ".tmp"
-last_run_number = int(config.get("Settings", "last_run_number", fallback="100"))
-# Number of concurrent downloads (adjust as needed)
-MAX_WORKERS = int(config.get("Settings", "max_workers", fallback="2"))
+    # Extract and return structured config data
+    settings = {
+        "OUTPUT_DIR": config["Settings"].get("OUTPUT_DIR", os.getcwd()),
+        "STEP_MOTHUR_OUTPUT_DIR": config["Settings"].get("STEP_MOTHUR_OUTPUT_DIR", os.getcwd()),
+        "EXTENSION": config["Settings"]["EXTENSION"],
+        "OLIGO_FILE": config["Settings"]["OLIGO_FILE"],
+        "LOG_FILE": config["Settings"]["LOG_FILE"],
+        "STEP_MOTHUR": config["Settings"]["STEP_MOTHUR"],
+        "PIPELINE_RUN_LOG_FILE": config["Settings"]["PIPELINE_RUN_LOG_FILE"],
+        "SPHL_CODE_LOG": config["Settings"]["SPHL_CODE_LOG"],
+        "LOG_FILE_TMP": config["Settings"]["LOG_FILE"] + ".tmp",
+        "last_run_number": int(config.get("Settings", "last_run_number", fallback="100")),
+        "MAX_WORKERS": int(config.get("Settings", "max_workers", fallback="2")),
+        "SENT_TO": config["Email"]["SENT_TO"],
+        "subject_template": config["Email"]["subject"],
+        "body_template": config["Email"]["body"],
+        "project_id": config["Settings"]["project_id"],
+        "scheduled_time": config["Settings"].get("scheduled_time", ""),
+        "STEP_MOTHUR_COMMAND": config["Settings"]["STEP_MOTHUR_COMMAND"],
+        "log_lock": FileLock(config["Settings"]["LOG_FILE"] + ".lock"),  # Lock file to prevent concurrent access
+        "SM_RUN_SUCCESS": "SM_PASS",
+    }
 
-SENT_TO = config["Email"]["SENT_TO"]
-subject_template = config['Email']['subject']
-body_template = config['Email']['body']
-
-# log_lock = threading.Lock()  # Lock for updating the run counter
-log_lock = FileLock(LOG_FILE + ".lock")  # Lock file to prevent concurrent access
-
-SM_RUN_SUCCESS = "SM_PASS"
-
-# Initialize an empty dictionary
-'''
-create a dictionary from the SPHL_CODE_LOG
-owner_id, owner_name, state_code
-30888858        CIMS EDLB       JO
-21732711        ODH Lab OH
-58960902        NCSLPH HMAS     NC
-'''
-owner_code_dict = {}
-
-# step_mothur_pipeline_success = False  # Track if step_mothur pipeline ran successfully
-
-# Read the file and populate the dictionary
-with open(SPHL_CODE_LOG, "r") as file:
-    for line in file:
-        parts = line.strip().split("\t")  # Split by tab
-        if len(parts) >= 3:  # Ensure there are at least 3 columns
-            owner_id, _, code = parts  # Extract ownerId and code, skip owner_name
-            owner_code_dict[owner_id] = code  
+    return settings
 
 
-# Configure logging
-logging.basicConfig(
-    filename=PIPELINE_RUN_LOG_FILE,
-    level=logging.INFO,
-    format="%(asctime)s - %(levelname)s - %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S",
-)
-
-# # handler method to clean up the matching record in the LOG_FILE, upon receiving
-# # system interuption signal
-# def create_cleanup_handler(project_name, project_id, run_id, owner_id):
-#     def cleanup_and_exit(signum, frame):
-#         if not step_mothur_pipeline_success:
-#             logging.error("System shutdown detected. Cleaning up...")
-#             update_logged_project(project_name, project_id, run_id, owner_id)
-#         sys.exit(1)
-
-#     return cleanup_and_exit
-
-def get_next_run_id(sphl_code):
+def get_next_run_id(sphl_code, settings):
     """Safely retrieves and increments the highest runID in the log."""
-    global last_run_number
 
-    with log_lock:
-        if os.path.exists(LOG_FILE):
-            with open(LOG_FILE, "r") as f:
+    with settings["log_lock"]:
+        if os.path.exists(settings["LOG_FILE"]):
+            with open(settings["LOG_FILE"], "r") as f:
                 reader = csv.reader(f, delimiter="\t")
                 for row in reader:
                     if not row:  # skip empty lines
@@ -109,14 +91,14 @@ def get_next_run_id(sphl_code):
                     match = re.search(r'(\d+)', run_id)  # Extract numeric part
                     if match:
                         try:
-                            last_run_number = max(last_run_number, int(match.group(1)))
+                            settings["last_run_number"] = max(settings["last_run_number"], int(match.group(1)))
                         except ValueError:
-                            logging.error(f"invalid entry in {LOG_FILE}, {ValueError}")
+                            logging.error(f"invalid entry in {settings['LOG_FILE']}, {ValueError}")
                             continue  # Skip invalid entries
 
         # increment and generate new runID
-        last_run_number += 1
-        new_run_id = f"HMAS_{last_run_number:03}_{sphl_code}" #padding as 3-digits
+        settings["last_run_number"] += 1
+        new_run_id = f"HMAS_{settings['last_run_number']:03}_{sphl_code}" #padding as 3-digits
 
     return new_run_id
 
@@ -153,20 +135,17 @@ def get_available_projects():
     return projects
 
 
-def has_project_been_downloaded(project_name, project_id): 
+def has_project_been_downloaded(project_name, project_id, settings): 
     """Checks if the project with the given ID has already been logged in step_mothur_log.
         return (True, None), if the project was already downloaded and SM run was successful (SM_RUN_SUCCESS)
         return (False, run_id), if the project was already downloaded but SM run failed (not status for SM_RUN)
         return (False, None), if the project was NOT downloaded
     """
-    if not os.path.exists(LOG_FILE):
-        logging.error(f"Can't find the {LOG_FILE}")
+    if not os.path.exists(settings["LOG_FILE"]):
+        logging.error(f"Can't find the {settings['LOG_FILE']}")
         sys.exit(1)
 
-    # with open(LOG_FILE, "r") as f:
-    #     downloaded_projects = {(line.strip().split('\t')[0], line.strip().split('\t')[1]) for line in f.readlines() if '\t' in line}
-
-    with open(LOG_FILE, "r") as f:
+    with open(settings["LOG_FILE"], "r") as f:
             downloaded_projects = [
                 (line.strip().split('\t')[0], line.strip().split('\t')[1], line.strip().split('\t')[2], line.strip().split('\t')[5] if len(line.strip().split('\t')) > 5 else None)
                 for line in f.readlines() if '\t' in line
@@ -184,20 +163,14 @@ def has_project_been_downloaded(project_name, project_id):
     # return (project_name, project_id) in downloaded_projects
 
 
-# def log_downloaded_project(project_name, project_id, run_id, owner_id):
-#     """Logs the downloaded project name and timestamp to step_mothur_log."""
-#     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-#     with open(LOG_FILE, "a") as f:
-#         f.write(f"{project_name}\t{project_id}\t{run_id}\t{owner_id}\t{timestamp}\n")
-
-def log_downloaded_project(project_name, project_id, run_id, owner_id):
+def log_downloaded_project(project_name, project_id, run_id, owner_id, settings):
     """Appends a log entry only if it doesn't already exist, using atomic file replacement."""
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     new_line = f"{project_name}\t{project_id}\t{run_id}\t{owner_id}\t{timestamp}\n"
     updated = False
 
-    with log_lock:
-        with open(LOG_FILE, "r") as infile, open(LOG_FILE_TMP, "w") as outfile:
+    with settings["log_lock"]:
+        with open(settings["LOG_FILE"], "r") as infile, open(settings["LOG_FILE_TMP"], "w") as outfile:
             for line in infile:
                 parts = line.strip().split("\t")
                 if parts[:4] == [project_name, project_id, run_id, owner_id]:
@@ -206,40 +179,40 @@ def log_downloaded_project(project_name, project_id, run_id, owner_id):
                 else:
                     outfile.write(line)
         if not updated:
-            with open(LOG_FILE_TMP, "a") as outfile:
+            with open(settings["LOG_FILE_TMP"], "a") as outfile:
                 outfile.write(new_line)
-        shutil.move(LOG_FILE_TMP, LOG_FILE)  # Atomic replacement
+        shutil.move(settings["LOG_FILE_TMP"], settings["LOG_FILE"])  # Atomic replacement
 
 
-def update_logged_project(project_name, project_id, run_id, owner_id):
+def update_logged_project(project_name, project_id, run_id, owner_id, settings):
     """Safely updates a record from the log file while handling concurrent access."""
-    with log_lock:  # Use the existing lock to ensure thread safety
+    with settings["log_lock"]:  # Use the existing lock to ensure thread safety
         found = False
         try:
             #we 'update' it by copying the original log file over to a tmp file and skip
             #any matching records, then replace the original log file with the tmp file
-            with open(LOG_FILE, "r") as infile, open(LOG_FILE_TMP, "w") as outfile:
+            with open(settings["LOG_FILE"], "r") as infile, open(settings["LOG_FILE_TMP"], "w") as outfile:
                 for line in infile:
                     fields = line.strip().split("\t")
                     if len(fields) >= 4 and fields[:4] == [project_name, project_id, run_id, owner_id]:
                         found = True
                         # continue  # Skip writing this line (deleting it)
-                        fields.append(SM_RUN_SUCCESS)
+                        fields.append(settings["SM_RUN_SUCCESS"])
                         line = '\t'.join(fields) + '\n'
                     outfile.write(line)
 
             if found:
-                shutil.move(LOG_FILE_TMP, LOG_FILE)  # Atomic file replacement
+                shutil.move(settings["LOG_FILE_TMP"], settings["LOG_FILE"])  # Atomic file replacement
                 return True  # Deletion was successful
             else:
-                os.remove(LOG_FILE_TMP)  # Cleanup temp file
+                os.remove(settings["LOG_FILE_TMP"])  # Cleanup temp file
                 return False  # No matching record found
 
         except FileNotFoundError:
             return False  # Log file doesn't exist
 
 
-def download_project_files(project_id, project_name, run_id):
+def download_project_files(project_id, project_name, run_id, settings):
     """Downloads FASTQ files for a given project and verifies success.
         bscli is smart, it checks for all fastq files of the given project are already D/Led
         and it will only download those were not previously D/Led
@@ -247,10 +220,10 @@ def download_project_files(project_id, project_name, run_id):
     """
     project_name = re.sub(r'\s+', ' ', project_name.strip())  # Normalize spaces
     project_name = project_name.replace(" ", "_") 
-    project_dir = os.path.join(OUTPUT_DIR, f"{run_id}_{project_name}")
+    project_dir = os.path.join(settings["OUTPUT_DIR"], f"{run_id}_{project_name}")
     os.makedirs(project_dir, exist_ok=True)
 
-    command = f"bs download project -i {project_id} -o {project_dir} --extension={EXTENSION}"
+    command = f"bs download project -i {project_id} -o {project_dir} --extension={settings["EXTENSION"]}"
     print(f"Executing: {command}")
 
     # Run the command and check if it was successful
@@ -262,82 +235,63 @@ def download_project_files(project_id, project_name, run_id):
 
     return True
 
-def download_and_run_stepmothur(project_name, owner_id, owner_name, project_id, run_id=None):
+def download_and_run_stepmothur(settings, project_name, owner_id, owner_name, project_id, run_id=None):
 
     #check if there is already a code for the owner in SPHL_CODE_LOG
-    if owner_id in owner_code_dict:
-        sphl_code = owner_code_dict[owner_id]
+    if owner_id in settings["owner_code_dict"]:
+        sphl_code = settings["owner_code_dict"][owner_id]
     else:
         body = f"""Hello,
 
         ***WARNING***
-        {owner_id}/{owner_name} doesn't have a HMAS code in the {SPHL_CODE_LOG} file!
+        {owner_id}/{owner_name} doesn't have a HMAS code in the {settings["SPHL_CODE_LOG"]} file!
         Hence {project_name}({project_id}) was not processed.
 
         Best,
         STEP_MOTHUR from CIMS 
         """
-        send_mail = f'echo -e "{body}" | mail -s "{project_name}({project_id})" {SENT_TO}'
+        send_mail = f'echo -e "{body}" | mail -s "{project_name}({project_id})" {settings["SENT_TO"]}'
         run_command(send_mail)
 
-        logging.error(f"{owner_id}/{owner_name} doesn't have a HMAS code in the {SPHL_CODE_LOG} file!")
+        logging.error(f"{owner_id}/{owner_name} doesn't have a HMAS code in the {settings['SPHL_CODE_LOG']} file!")
         return False
 
     if not run_id: #if we don't have a run_id yet
-        run_id = get_next_run_id(sphl_code)
+        run_id = get_next_run_id(sphl_code, settings)
 
     print(f"Downloading project {project_name}...")
-    success = download_project_files(project_id, project_name, run_id)
+    success = download_project_files(project_id, project_name, run_id, settings)
 
-    project_dir = os.path.join(OUTPUT_DIR, f"{run_id}_{project_name}")
-    output = os.path.join(STEP_MOTHUR_OUTPUT_DIR,f"{run_id}")
+    project_dir = os.path.join(settings["OUTPUT_DIR"], f"{run_id}_{project_name}")
+    output = os.path.join(settings["STEP_MOTHUR_OUTPUT_DIR"],f"{run_id}")
     current_dir = os.getcwd()
-    command = (f" cd {STEP_MOTHUR} && "
-               f"nextflow run hmas2.nf --primer {OLIGO_FILE}  "
+    # command = (f" cd {settings['STEP_MOTHUR']} && "
+    #            f"nextflow run hmas2.nf --primer {settings['OLIGO_FILE']}  "
+    #            f"--reads {project_dir} "
+    #            f"--outdir {output} && stty erase ^H && stty erase ^? && "
+    #            f"cd {current_dir}")
+
+    command = (f" cd {settings['STEP_MOTHUR']} && "
+               f" {settings['STEP_MOTHUR_COMMAND']} "
+               f"--primer {settings['OLIGO_FILE']}  "
                f"--reads {project_dir} "
                f"--outdir {output} && stty erase ^H && stty erase ^? && "
                f"cd {current_dir}")
 
     if success:
-        # try:
-        # # Register signal handlers with correct parameters
-        # cleanup_handler = create_cleanup_handler(project_name, project_id, run_id, owner_id)
-        # signal.signal(signal.SIGTERM, cleanup_handler) #soft termination signal
-        # signal.signal(signal.SIGINT, cleanup_handler) #Signal Interrupt Ctrl+C
-        # signal.signal(signal.SIGHUP, cleanup_handler) #Signal Hangup, terminal disconnection
 
-        log_downloaded_project(project_name, project_id, run_id, owner_id)
+        log_downloaded_project(project_name, project_id, run_id, owner_id, settings)
         result = subprocess.run(command, shell=True)
         if result.returncode == 0:  # Check if the command was successful
-            if not update_logged_project(project_name, project_id, run_id, owner_id): #update log with SM_PASS
-                logging.error(f"Either {LOG_FILE} does not exist or ({project_name}, {project_id}, {run_id}, {owner_id}) is not in the record")
+            if not update_logged_project(project_name, project_id, run_id, owner_id, settings): #update log with SM_PASS
+                logging.error(f"Either {settings['LOG_FILE']} does not exist or ({project_name}, {project_id}, {run_id}, {owner_id}) is not in the record")
 
-            # global step_mothur_pipeline_success
-            # step_mothur_pipeline_success = True
             print(f"step_mothur is successful for {project_name}. Running {command}...")
 
-            subject = subject_template.format(project_name=project_name, project_id=project_id)
-            # body = body_template.format(project_name=project_name, project_id=project_id, HMAS_RUN_ID=run_id)
-            # body = body_template.format(project_name=project_name, project_id=project_id, HMAS_RUN_ID=run_id,
-            #                             OUTPUT_DIR=project_dir, STEP_MOTHUR_OUTPUT_DIR=output )
-
-            # body = f"""Hello,
-
-            # {project_name}({project_id}) has been successfully downloaded at:
-            # {OUTPUT_DIR}
-
-            # and step_mothur report can be found at:
-            # {STEP_MOTHUR_OUTPUT_DIR} , with run_id starting with {run_id}
-
-            # Best,
-            # STEP_MOTHUR from CIMS 
-            # """
-
-            # send_mail = f'echo -e "{body}" | mail -s "{project_name}({project_id})" -a {STEP_MOTHUR_OUTPUT_DIR}/{run_id}*/*.html {SENT_TO}'
-            # send_mail = f'echo -e "{body}" | mail -s "{subject}" {SENT_TO}'
+            subject = settings["subject_template"].format(project_name=project_name, project_id=project_id)
 
             # Find all matching directories
-            matching_dirs = glob.glob(os.path.join(STEP_MOTHUR_OUTPUT_DIR, f"{run_id}*"))
+            matching_dirs = glob.glob(os.path.join(settings["STEP_MOTHUR_OUTPUT_DIR"], f"{run_id}*"))
 
             # Filter to only directories
             matching_dirs = [d for d in matching_dirs if os.path.isdir(d)]
@@ -361,26 +315,24 @@ def download_and_run_stepmothur(project_name, owner_id, owner_name, project_id, 
                 if html_files:
                     html_file = html_files[0]  # or handle multiple matches
 
-            # Create ZIP file (flat structure)
-            zip_filename = os.path.join(latest_dir, f"{run_id}_report.zip")
-            with zipfile.ZipFile(zip_filename, 'w', zipfile.ZIP_DEFLATED) as zipf:
-                zipf.write(html_file, arcname=os.path.basename(html_file))
+            if html_file:
+                # Create ZIP file (flat structure)
+                zip_filename = os.path.join(latest_dir, f"{run_id}_report.zip")
+                with zipfile.ZipFile(zip_filename, 'w', zipfile.ZIP_DEFLATED) as zipf:
+                    zipf.write(html_file, arcname=os.path.basename(html_file))
 
-            body = body_template.format(project_name=project_name, project_id=project_id, HMAS_RUN_ID=run_id,
-                                        OUTPUT_DIR=project_dir, STEP_MOTHUR_OUTPUT_DIR=latest_dir )
+                body = settings["body_template"].format(project_name=project_name, project_id=project_id, HMAS_RUN_ID=run_id,
+                                            OUTPUT_DIR=project_dir, STEP_MOTHUR_OUTPUT_DIR=latest_dir )
 
-            send_mail = f'echo -e "{body}" | mail -s "{project_name}({project_id})" -a "{zip_filename}" {SENT_TO}'
-            run_command(send_mail)
+                send_mail = f'echo -e "{body}" | mail -s "{project_name}({project_id})" -a "{zip_filename}" {settings["SENT_TO"]}'
+                run_command(send_mail)
+            else:
+                logging.error(f"step_mothur run for {project_name} {project_id} did not generate valid html report, possibly empty fastq input")
 
         else:
             print(f"step_mothur  failed for {project_name}. Running {command}... \n  Skipping log update.")
             logging.error(f"step_mothur  failed for {project_name}. Running {command}... \n Skipping log update.")
             return False
-    # finally:
-    #     if not step_mothur_pipeline_success:
-    #         if not update_logged_project(project_name, project_id, run_id, owner_id):
-    #             logging.error(f"In finally, . Either {LOG_FILE} does not exist or ({project_name}, {project_id}, {run_id}, {owner_id}) is not in the record")
-    #             logging.warning(f"if there is System shutdown error above, ignore the step_mothur_log error")
 
     else:
         logging.error(f"Download failed for {project_name}. Skipping execution of {command}.")
@@ -389,23 +341,23 @@ def download_and_run_stepmothur(project_name, owner_id, owner_name, project_id, 
     return True
 
 # Function to handle downloading and processing
-def process_project(project_id, project_name, owner_id, owner_name):
+def process_project(project_id, project_name, owner_id, owner_name, settings):
 
-    status, run_id = has_project_been_downloaded(project_name, project_id)
+    status, run_id = has_project_been_downloaded(project_name, project_id, settings)
     if status: #already downloaded and SM run was successful
         logging.info(f"Project {project_name} already downloaded. Skipping.")
         return
 
     logging.info(f"Starting download for project {project_name} (ID: {project_id})")
     try:
-        if download_and_run_stepmothur(project_name, owner_id, owner_name, project_id, run_id):
+        if download_and_run_stepmothur(settings, project_name, owner_id, owner_name, project_id, run_id):
             logging.info(f"Successfully downloaded and processed {project_name} (ID: {project_id})")
     except Exception as e:
         # logging.error(f"Error processing project {project_name} (ID: {project_id}): {e}")
         logging.error(f"Error processing project {project_name} (ID: {project_id})", exc_info=True)
 
 
-def main():
+def main(settings):
     """this script can be run as: 
     python bscli_fq_downloader.py -c config.ini
     it reads all required parameters from the config.ini file
@@ -415,7 +367,7 @@ def main():
     2. leave the project_id empty and the pipeline will scan your basespace account, download/analyze all
     available projects
     """
-    project_id = config["Settings"]["project_id"]
+    project_id = settings["project_id"]
 
     print("Fetching available projects...")
     projects = get_available_projects()
@@ -431,13 +383,13 @@ def main():
             return
         
         project_name, owner_id, owner_name = projects[project_id]
-        process_project(project_id, project_name, owner_id, owner_name)
+        process_project(project_id, project_name, owner_id, owner_name, settings)
 
         return
 
     # otherwise, download and run new projects simultaneously
-    with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
-        futures = {executor.submit(process_project, project_id, project_name, owner_id, owner_name): project_name 
+    with concurrent.futures.ThreadPoolExecutor(max_workers=settings["MAX_WORKERS"]) as executor:
+        futures = {executor.submit(process_project, project_id, project_name, owner_id, owner_name, settings): project_name 
                    for project_id, (project_name, owner_id, owner_name) in projects.items()}
 
     # Wait for all tasks to complete
@@ -448,12 +400,37 @@ def main():
         except Exception as e:
             logging.error(f"Unhandled error in processing {project_name}: {e}")
 
-    # for project_id, (project_name, owner_id, owner_name) in projects.items(): 
-    #     process_project(project_id, project_name, owner_id, owner_name)
+
+def archive_files(config_path, log_file_list):
+    # Archive the config file
+    config_archive_path = config_path + ".archive"
+    shutil.copyfile(config_path, config_archive_path)
+    print(f"Archived config file to: {config_archive_path}")
+
+    # Archive log files
+    for log_path in log_file_list:
+        if os.path.exists(log_path):
+            log_archive_path = log_path + ".archive"
+            shutil.copyfile(log_path, log_archive_path)
+            print(f"Archived log file to: {log_archive_path}")
+        else:
+            print(f"Log file does not exist and will not be archived: {log_path}")
 
 if __name__ == "__main__":
 
-    scheduled_time = config["Settings"].get("scheduled_time", "")
+    parser = argparse.ArgumentParser()
+    parser.add_argument("-c", "--config", required=True)
+    args = parser.parse_args()
+
+    settings = load_config(args.config)
+    
+    #archive 3 important files: config file, step_mothur_log, sphl_code_log
+    archive_files(args.config, [settings["SPHL_CODE_LOG"], settings["LOG_FILE"]])
+
+    configure_logging(settings["PIPELINE_RUN_LOG_FILE"])
+    settings["owner_code_dict"] = load_owner_code_dict(settings["SPHL_CODE_LOG"])
+    
+    scheduled_time = settings["scheduled_time"]
 
     # Split the string into a list of times
     time_list = scheduled_time.split()
@@ -483,7 +460,7 @@ if __name__ == "__main__":
         # Schedule tasks based on command-line input
         for t in parsed_scheduled_time:
             print(f"running {os.path.basename(__file__)} at {t}")
-            schedule.every().day.at(t).do(main)
+            schedule.every().day.at(t).do(functools.partial(main, settings))
 
         # Keep the script running to handle the scheduled tasks
         while True:
@@ -491,4 +468,4 @@ if __name__ == "__main__":
             time.sleep(60)  # Wait for 1 minute before checking again
 
     else: #or it's just a one-off
-        main()
+        main(settings)
