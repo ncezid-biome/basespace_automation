@@ -265,15 +265,8 @@ def download_and_run_stepmothur(settings, project_name, owner_id, owner_name, pr
     project_dir = os.path.join(settings["OUTPUT_DIR"], f"{run_id}_{project_name}")
     output = os.path.join(settings["STEP_MOTHUR_OUTPUT_DIR"],f"{run_id}")
     current_dir = os.getcwd()
-    # command = (f" cd {settings['STEP_MOTHUR']} && "
-    #            f"nextflow run hmas2.nf --primer {settings['OLIGO_FILE']}  "
-    #            f"--reads {project_dir} "
-    #            f"--outdir {output} && stty erase ^H && stty erase ^? && "
-    #            f"cd {current_dir}")
-
-    command = (f" cd {settings['STEP_MOTHUR']} && "
-               f" {settings['STEP_MOTHUR_COMMAND']} "
-               f"--primer {settings['OLIGO_FILE']}  "
+    command = (f" cd {STEP_MOTHUR} && "
+               f"{STEP_MOTHUR_COMMAND} --primer {OLIGO_FILE}  "
                f"--reads {project_dir} "
                f"--outdir {output} && stty erase ^H && stty erase ^? && "
                f"cd {current_dir}")
