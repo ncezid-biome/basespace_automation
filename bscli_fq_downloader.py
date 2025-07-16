@@ -21,6 +21,9 @@ import glob
 import zipfile
 import functools
 
+SM_TIMEOUT = 10000 # time out after (10000 seconds, ~2.8 hours)
+BD_DOWNLOAD_TIMEOUT = 300 # time out after 5 minutes
+
 def load_owner_code_dict(sphl_code_log_path):
     """Read SPHL_CODE_LOG file and build a lookup dictionary.
     create a dictionary from the SPHL_CODE_LOG
@@ -226,14 +229,31 @@ def download_project_files(project_id, project_name, run_id, settings):
     command = f"bs download project -i {project_id} -o {project_dir} --extension={settings["EXTENSION"]}"
     print(f"Executing: {command}")
 
-    # Run the command and check if it was successful
-    result = subprocess.run(command, shell=True)
+    try:
+        result = subprocess.run(
+            command,
+            shell=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=BD_DOWNLOAD_TIMEOUT, 
+            stdin=subprocess.DEVNULL  # Avoids hanging on input prompts
+        )
 
-    if result.returncode != 0:
-        logging.error(f"Error: Download failed for project {project_name}.")
+        if result.returncode != 0:
+            logging.error(f"Download failed for project {project_name}. Exit code: {result.returncode}")
+            return False
+
+        logging.info(f"Download succeeded for project {project_name}.")
+        return True
+
+    except subprocess.TimeoutExpired:
+        logging.error(f"Download timed out for project {project_name} after 300 seconds.")
+        return False
+    except Exception as e:
+        logging.error(f"Unexpected error during download of project {project_name}: {str(e)}")
         return False
 
-    return True
 
 def download_and_run_stepmothur(settings, project_name, owner_id, owner_name, project_id, run_id=None):
 
@@ -265,66 +285,82 @@ def download_and_run_stepmothur(settings, project_name, owner_id, owner_name, pr
     project_dir = os.path.join(settings["OUTPUT_DIR"], f"{run_id}_{project_name}")
     output = os.path.join(settings["STEP_MOTHUR_OUTPUT_DIR"],f"{run_id}")
     current_dir = os.getcwd()
-    command = (f" cd {STEP_MOTHUR} && "
-               f"{STEP_MOTHUR_COMMAND} --primer {OLIGO_FILE}  "
-               f"--reads {project_dir} "
-               f"--outdir {output} && stty erase ^H && stty erase ^? && "
-               f"cd {current_dir}")
+    command = (f" cd {settings["STEP_MOTHUR"]} && "
+            f"{settings["STEP_MOTHUR_COMMAND"]} --primer {settings["OLIGO_FILE"]}  "
+            f"--reads {project_dir} "
+            f"--outdir {output}")
 
     if success:
 
         log_downloaded_project(project_name, project_id, run_id, owner_id, settings)
-        result = subprocess.run(command, shell=True)
-        if result.returncode == 0:  # Check if the command was successful
-            if not update_logged_project(project_name, project_id, run_id, owner_id, settings): #update log with SM_PASS
-                logging.error(f"Either {settings['LOG_FILE']} does not exist or ({project_name}, {project_id}, {run_id}, {owner_id}) is not in the record")
+        try:
+            result = subprocess.run(
+                command,
+                shell=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                timeout=SM_TIMEOUT, 
+                stdin=subprocess.DEVNULL  # Avoids hanging on input prompts
+            )
 
-            print(f"step_mothur is successful for {project_name}. Running {command}...")
+            if result.returncode == 0:  # Check if the command was successful
+                if not update_logged_project(project_name, project_id, run_id, owner_id, settings): #update log with SM_PASS
+                    logging.error(f"Either {settings['LOG_FILE']} does not exist or ({project_name}, {project_id}, {run_id}, {owner_id}) is not in the record")
 
-            subject = settings["subject_template"].format(project_name=project_name, project_id=project_id)
+                print(f"step_mothur is successful for {project_name}. Running {command}...")
 
-            # Find all matching directories
-            matching_dirs = glob.glob(os.path.join(settings["STEP_MOTHUR_OUTPUT_DIR"], f"{run_id}*"))
+                subject = settings["subject_template"].format(project_name=project_name, project_id=project_id)
 
-            # Filter to only directories
-            matching_dirs = [d for d in matching_dirs if os.path.isdir(d)]
+                # Find all matching directories
+                matching_dirs = glob.glob(os.path.join(settings["STEP_MOTHUR_OUTPUT_DIR"], f"{run_id}*"))
 
-            # Sort directories by the timestamp in the folder name
-            def extract_timestamp(path):
-                basename = os.path.basename(path)
-                try:
-                    ts = basename.split('_')[-2] + basename.split('_')[-1]
-                    return datetime.strptime(ts, "%Y%m%d%H%M%S")
-                except (IndexError, ValueError):
-                    return datetime.min  # Treat invalid as oldest
+                # Filter to only directories
+                matching_dirs = [d for d in matching_dirs if os.path.isdir(d)]
 
-            matching_dirs.sort(key=extract_timestamp, reverse=True)
+                # Sort directories by the timestamp in the folder name
+                def extract_timestamp(path):
+                    basename = os.path.basename(path)
+                    try:
+                        ts = basename.split('_')[-2] + basename.split('_')[-1]
+                        return datetime.strptime(ts, "%Y%m%d%H%M%S")
+                    except (IndexError, ValueError):
+                        return datetime.min  # Treat invalid as oldest
 
-            # Take the latest directory and find the HTML file
-            latest_dir = matching_dirs[0] if matching_dirs else None
-            html_file = None
-            if latest_dir:
-                html_files = glob.glob(os.path.join(latest_dir, "*.html"))
-                if html_files:
-                    html_file = html_files[0]  # or handle multiple matches
+                matching_dirs.sort(key=extract_timestamp, reverse=True)
 
-            if html_file:
-                # Create ZIP file (flat structure)
-                zip_filename = os.path.join(latest_dir, f"{run_id}_report.zip")
-                with zipfile.ZipFile(zip_filename, 'w', zipfile.ZIP_DEFLATED) as zipf:
-                    zipf.write(html_file, arcname=os.path.basename(html_file))
+                # Take the latest directory and find the HTML file
+                latest_dir = matching_dirs[0] if matching_dirs else None
+                html_file = None
+                if latest_dir:
+                    html_files = glob.glob(os.path.join(latest_dir, "*.html"))
+                    if html_files:
+                        html_file = html_files[0]  # or handle multiple matches
 
-                body = settings["body_template"].format(project_name=project_name, project_id=project_id, HMAS_RUN_ID=run_id,
-                                            OUTPUT_DIR=project_dir, STEP_MOTHUR_OUTPUT_DIR=latest_dir )
+                if html_file:
+                    # Create ZIP file (flat structure)
+                    zip_filename = os.path.join(latest_dir, f"{run_id}_report.zip")
+                    with zipfile.ZipFile(zip_filename, 'w', zipfile.ZIP_DEFLATED) as zipf:
+                        zipf.write(html_file, arcname=os.path.basename(html_file))
 
-                send_mail = f'echo -e "{body}" | mail -s "{project_name}({project_id})" -a "{zip_filename}" {settings["SENT_TO"]}'
-                run_command(send_mail)
+                    body = settings["body_template"].format(project_name=project_name, project_id=project_id, HMAS_RUN_ID=run_id,
+                                                OUTPUT_DIR=project_dir, STEP_MOTHUR_OUTPUT_DIR=latest_dir )
+
+                    send_mail = f'echo -e "{body}" | mail -s "{project_name}({project_id})" -a "{zip_filename}" {settings["SENT_TO"]}'
+                    run_command(send_mail)
+                else:
+                    logging.error(f"step_mothur run for {project_name} {project_id} did not generate valid html report, possibly empty fastq input")
+
             else:
-                logging.error(f"step_mothur run for {project_name} {project_id} did not generate valid html report, possibly empty fastq input")
-
-        else:
-            print(f"step_mothur  failed for {project_name}. Running {command}... \n  Skipping log update.")
-            logging.error(f"step_mothur  failed for {project_name}. Running {command}... \n Skipping log update.")
+                print(f"step_mothur  failed for {project_name}. Running {command}... \n  Skipping log update.")
+                logging.error(f"step_mothur  failed for {project_name}. Running {command}... \n Skipping log update.")
+                return False
+        
+        except subprocess.TimeoutExpired:
+            logging.error(f"step_mothur  failed for {project_name} after 9000 seconds.")
+            return False
+        except Exception as e:
+            logging.error(f"Unexpected error during step_mothur run {project_name}: {str(e)}")
             return False
 
     else:
