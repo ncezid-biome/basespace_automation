@@ -21,8 +21,9 @@ import glob
 import zipfile
 import functools
 
-SM_TIMEOUT = 10000 # time out after (10000 seconds, ~2.8 hours)
-BD_DOWNLOAD_TIMEOUT = 300 # time out after 5 minutes
+# moved to config.ini
+# SM_TIMEOUT = 30000 # time out after (30000 seconds, ~8.4 hours)
+# BD_DOWNLOAD_TIMEOUT = 300 # time out after 5 minutes
 
 def load_owner_code_dict(sphl_code_log_path):
     """Read SPHL_CODE_LOG file and build a lookup dictionary.
@@ -74,6 +75,8 @@ def load_config(config_path):
         "STEP_MOTHUR_COMMAND": config["Settings"]["STEP_MOTHUR_COMMAND"],
         "log_lock": FileLock(config["Settings"]["LOG_FILE"] + ".lock"),  # Lock file to prevent concurrent access
         "SM_RUN_SUCCESS": "SM_PASS",
+        "SM_TIMEOUT": int(config.get("Settings", "SM_TIMEOUT", fallback="30000")),
+        "BD_DOWNLOAD_TIMEOUT": int(config.get("Settings", "BD_DOWNLOAD_TIMEOUT", fallback="600")),
     }
 
     return settings
@@ -236,7 +239,7 @@ def download_project_files(project_id, project_name, run_id, settings):
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
-            timeout=BD_DOWNLOAD_TIMEOUT, 
+            timeout=settings["BD_DOWNLOAD_TIMEOUT"], 
             stdin=subprocess.DEVNULL  # Avoids hanging on input prompts
         )
 
@@ -248,7 +251,8 @@ def download_project_files(project_id, project_name, run_id, settings):
         return True
 
     except subprocess.TimeoutExpired:
-        logging.error(f"Download timed out for project {project_name} after 300 seconds.")
+        logging.error(f"Download timed out for project {project_name} after {settings["BD_DOWNLOAD_TIMEOUT"]} seconds.")
+        print(f"Download timed out for project {project_name} after {settings["BD_DOWNLOAD_TIMEOUT"]} seconds.")
         return False
     except Exception as e:
         logging.error(f"Unexpected error during download of project {project_name}: {str(e)}")
@@ -300,7 +304,7 @@ def download_and_run_stepmothur(settings, project_name, owner_id, owner_name, pr
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
-                timeout=SM_TIMEOUT, 
+                timeout=settings["SM_TIMEOUT"], 
                 stdin=subprocess.DEVNULL  # Avoids hanging on input prompts
             )
 
@@ -357,7 +361,8 @@ def download_and_run_stepmothur(settings, project_name, owner_id, owner_name, pr
                 return False
         
         except subprocess.TimeoutExpired:
-            logging.error(f"step_mothur  failed for {project_name} after 9000 seconds.")
+            logging.error(f"step_mothur  failed for {project_name} after {settings["SM_TIMEOUT"]} seconds.")
+            print(f"step_mothur  failed for {project_name} after {settings["SM_TIMEOUT"]} seconds.")
             return False
         except Exception as e:
             logging.error(f"Unexpected error during step_mothur run {project_name}: {str(e)}")
