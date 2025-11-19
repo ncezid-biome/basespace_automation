@@ -6,7 +6,7 @@ The purpose of this repository is to serve as a nice template to align with the 
  
 The BaseSpace automation pipeline scans your BaseSpace account for all available project data sets. It checks your local `step_mothur_log` file to determine if a specific project data set has been downloaded and/or analyzed by `step_mothur`. It reads all required parameters from a `config file (config.ini)`  
 Since the pipeline will run `step_mothur` pipeline, you need to set up the environment properly, please refer to <a href="https://github.com/ncezid-biome/HMAS-QC-Pipeline2" target="_blank">step_mothur github repo</a>.   
-And if this is the first time you're running BaseSpace automation pipeline, you will also need to install a python **schedule module** , by `pip install schedule `(so the pipeline runs periodically at given time slots).  
+And if this is the first time you're running BaseSpace automation pipeline, you will also need to install a python **schedule module** , by `pip install schedule `(so the pipeline runs periodically at given time slots). Or follow the instructions below. 
 
 
 ## Main Scripts
@@ -15,14 +15,34 @@ And if this is the first time you're running BaseSpace automation pipeline, you 
 
 This script checks for new projects under your BaseSpace account, downloads them, and runs `step_mothur` on those new projects.
 
-#### Usage:
+
+#### Setup and Installation
+
+1. **copy over the config file**
 
 ```sh
 cp config.ini.template config.ini
+```  
+(update necessary path variables in config.ini appropriately)
 
-update necessary path variables in config.ini
+
+2. **Start a tmux session**
+```bash
+tmux new-session -s BD_SM (or any name you prefer)
 ```
 
+3. **Insure pip is installed**
+```bash
+python -m ensurepip --default-pip
+```
+
+4. **Install required Python libraries**
+```bash
+python -m pip install --user schedule
+python -m pip install --user filelock
+```
+
+5. **Run the main script**
 ```sh
 python bscli_fq_downloader.py -c config.ini
 ```

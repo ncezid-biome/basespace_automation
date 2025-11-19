@@ -18,7 +18,7 @@ LOG_FILE = step_mothur_log
 STEP_MOTHUR = /path/to/step_mothur_pipeline
 # main step mothur run commands (without the parameters). need ml java to load the latest version java to be 
 # compatible with running nextflow in Scicomp
-STEP_MOTHUR_COMMAND = ml java && nextflow run hmas2.nf -profile singularity
+STEP_MOTHUR_COMMAND = ml java/17.0.6 && nextflow run hmas2.nf -profile singularity
 # running log file for this pipeline
 PIPELINE_RUN_LOG_FILE = stepmothur_download.log
 
@@ -47,6 +47,13 @@ scheduled_time =
 
 #number of concurrent threads running the pipeline
 max_workers = 1
+
+SM_TIMEOUT = 30000
+# step_mothur time out after (30000 seconds, ~8.4 hours)
+
+BD_DOWNLOAD_TIMEOUT = 600
+# basespace download time out after 10 minutes
+
 
 #NOTE: do not change {} placeholders; And you can move them around and/or remove them. But can't modify or add more
 [Email]
