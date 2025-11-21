@@ -87,12 +87,24 @@ def get_next_run_id(sphl_code, settings):
 
     with settings["log_lock"]:
         if os.path.exists(settings["LOG_FILE"]):
+            
+            def tab_only_lines(file_handle):
+                for line in file_handle:
+                    # Check if the line contains at least one tab
+                    if "\t" not in line:
+                        print(f"Skipping malformed line (no tab found): {line.rstrip()}")
+                        continue
+                    yield line
+        
             with open(settings["LOG_FILE"], "r") as f:
                 reader = csv.reader(f, delimiter="\t")
                 for row in reader:
                     if not row:  # skip empty lines
                         continue
                     #expected format: project_name, project_id, run_id, owner_id, timestamp, SM_STATUS
+                    if len(row) != 6:
+                        print(f"Skipping malformed row (expected 6 fields): {row}")
+                        continue
                     run_id = row[2]  # Extract runID (3th column)
                     match = re.search(r'(\d+)', run_id)  # Extract numeric part
                     if match:

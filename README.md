@@ -48,10 +48,11 @@ python bscli_fq_downloader.py -c config.ini
 ```
 
 - This will check for all new projects under your BaseSpace account.
-- 2 log files are required to run the pipeline. `sphl_code_log` and `step_mothur_log`   
+- **2 log** files are required to run the pipeline. `sphl_code_log` and `step_mothur_log`   
   - `sphl_code_log` is a 3 column (tab delimited) text file as: basespace owner_id, basespace owner_name, state_code
   - `step_mothur_log` is a 6 column (tab delimited) text file as: project_name, project_id, run_id, owner_id, timestamp, status.  **To run the pipeline for the first time, you can generate an empty `step_mothur_log` with command `touch step_mothur_log`**  
-- Successfully processed projects are logged in `step_mothur_log`, ensuring they are not processed again.
+- Successfully processed projects are logged in `step_mothur_log`, ensuring they are not processed again.  
+- **the other 2 log** files are also useful for debugging purpose: `stepmothur_download.log` and `nextflow.log` (this log file is in the folder where we run SM pipeline).  
 
  
 
