@@ -14,12 +14,9 @@ import shutil
 import sys
 import subprocess
 import configparser
-import schedule
-import time
 from filelock import FileLock
 import glob
 import zipfile
-import functools
 
 # moved to config.ini
 # SM_TIMEOUT = 30000 # time out after (30000 seconds, ~8.4 hours)
@@ -71,7 +68,7 @@ def load_config(config_path):
         "subject_template": config["Email"]["subject"],
         "body_template": config["Email"]["body"],
         "project_id": config["Settings"]["project_id"],
-        "scheduled_time": config["Settings"].get("scheduled_time", ""),
+        # "scheduled_time": config["Settings"].get("scheduled_time", ""),
         "STEP_MOTHUR_COMMAND": config["Settings"]["STEP_MOTHUR_COMMAND"],
         "log_lock": FileLock(config["Settings"]["LOG_FILE"] + ".lock"),  # Lock file to prevent concurrent access
         "SM_RUN_SUCCESS": "SM_PASS",
@@ -136,7 +133,6 @@ def get_available_projects(settings):
     # command = "bs list projects -f csv"
     # command = "bs list project -F UserOwnedBy.Id -F UserOwnedBy.Name -F Id -F Name -f csv"
     command = f"{settings["BS_COMMAND"]} list project -F UserOwnedBy.Id -F UserOwnedBy.Name -F Id -F Name -f csv"
-    
     output = run_command(command)
 
     if not output:
@@ -247,7 +243,7 @@ def download_project_files(project_id, project_name, run_id, settings):
     # command = f"bs download project -i {project_id} -o {project_dir} --extension={settings["EXTENSION"]}"
     command = f"{settings["BS_COMMAND"]} download project -i {project_id} -o {project_dir} --extension={settings["EXTENSION"]}"
     
-    print(f"Executing: {command}")
+    # print(f"Executing: {command}")
 
     try:
         result = subprocess.run(
@@ -420,11 +416,9 @@ def main(settings):
     """
     project_id = settings["project_id"]
 
-    print("Fetching available projects...")
     projects = get_available_projects(settings)
 
     if not projects:
-        print("No projects found or failed to retrieve projects.")
         return
 
     # If a specific project ID is provided
@@ -456,14 +450,14 @@ def archive_files(config_path, log_file_list):
     # Archive the config file
     config_archive_path = config_path + ".archive"
     shutil.copyfile(config_path, config_archive_path)
-    print(f"Archived config file to: {config_archive_path}")
+    # print(f"Archived config file to: {config_archive_path}")
 
     # Archive log files
     for log_path in log_file_list:
         if os.path.exists(log_path):
             log_archive_path = log_path + ".archive"
             shutil.copyfile(log_path, log_archive_path)
-            print(f"Archived log file to: {log_archive_path}")
+            # print(f"Archived log file to: {log_archive_path}")
         else:
             print(f"Log file does not exist and will not be archived: {log_path}")
 
@@ -481,42 +475,8 @@ if __name__ == "__main__":
     configure_logging(settings["PIPELINE_RUN_LOG_FILE"])
     settings["owner_code_dict"] = load_owner_code_dict(settings["SPHL_CODE_LOG"])
     
-    scheduled_time = settings["scheduled_time"]
-
-    # Split the string into a list of times
-    time_list = scheduled_time.split()
-    # Function to check and convert time_str into datetime object
-    def valid_time(time_str):
-        try:
-            # Attempt to parse the time string
-            datetime.strptime(time_str, "%H:%M")
-            return time_str
-        except ValueError:
-            # Raise an error if the time format is invalid
-            raise ValueError(f"Invalid time format: {time_str}. Expected HH:MM (24-hour).")
-
-    # Convert each time to a datetime object, handling invalid times
-    parsed_scheduled_time = []
-    for time_str in time_list:
-        try:
-            parsed_time = valid_time(time_str)
-            parsed_scheduled_time.append(parsed_time)
-        except ValueError as e:
-            logging.error(e) 
-            sys.exit(1)
-
-    # we have set up time slots to run the pipeline continuously
-    if parsed_scheduled_time:
-
-        # Schedule tasks based on command-line input
-        for t in parsed_scheduled_time:
-            print(f"running {os.path.basename(__file__)} at {t}")
-            schedule.every().day.at(t).do(functools.partial(main, settings))
-
-        # Keep the script running to handle the scheduled tasks
-        while True:
-            schedule.run_pending()  # Check for pending tasks to run
-            time.sleep(60)  # Wait for 1 minute before checking again
-
-    else: #or it's just a one-off
+    try:
         main(settings)
+    except Exception:
+        logging.exception("Fatal error")
+        raise

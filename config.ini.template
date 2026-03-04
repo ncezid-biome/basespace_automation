@@ -22,6 +22,9 @@ STEP_MOTHUR_COMMAND = ml java/17.0.6 && nextflow run hmas2.nf -profile singulari
 # running log file for this pipeline
 PIPELINE_RUN_LOG_FILE = stepmothur_download.log
 
+#location for BaseSpace binary file
+BS_COMMAND = /path/to/bs 
+
 # log file for the state code
 # it's tab delimited and has 3 columns (owner_id, owner_name, state_code)
 #21732711        ODH Lab    OH

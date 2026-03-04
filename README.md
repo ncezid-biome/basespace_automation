@@ -1,12 +1,18 @@
-# template
-
-The purpose of this repository is to serve as a nice template to align with the values in DFWED.
-
 ## Overview
  
 The BaseSpace automation pipeline scans your BaseSpace account for all available project data sets. It checks your local `step_mothur_log` file to determine if a specific project data set has been downloaded and/or analyzed by `step_mothur`. It reads all required parameters from a `config file (config.ini)`  
 Since the pipeline will run `step_mothur` pipeline, you need to set up the environment properly, please refer to <a href="https://github.com/ncezid-biome/HMAS-QC-Pipeline2" target="_blank">step_mothur github repo</a>.   
 And if this is the first time you're running BaseSpace automation pipeline, you will also need to install a python **schedule module** , by `pip install schedule `(so the pipeline runs periodically at given time slots). Or follow the instructions below. 
+
+## ⚠️ Python Version Requirement
+
+**Python 3.12 or later is required.**
+
+This project uses f-strings with nested double quotes (e.g., `f"{var["key"]}"`),  
+which are only supported starting in **Python 3.12**.
+
+If you are using an earlier Python version (e.g., 3.11 or below),  the script will fail with a syntax error.
+
 
 
 ## Main Scripts
@@ -90,6 +96,29 @@ BASESPACE_ACCESS_TOKEN
 
 Or use CIMS basespace account credentials to log in  
 ```
+
+### 2. `bscli_fq_downloader_cron.py`
+
+This version has the **internal scheduling functionality removed** and is designed to:
+
+* Be triggered **once per execution**
+* Be used with a system-level scheduler such as **cron**
+
+It follows **almost the same setup and installation process** as:
+
+```
+bscli_fq_downloader.py
+```
+
+**Exception:** it does *not* require the `schedule` package.
+
+Therefore, this step is **NOT needed**:
+
+```bash
+python -m pip install --user schedule
+```
+
+Use this version when you want job scheduling to be handled externally (e.g., via `crontab`) instead of inside the Python script.  
 
 ## Notices
 
