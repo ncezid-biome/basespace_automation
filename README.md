@@ -81,21 +81,21 @@ Before running these scripts, ensure:
    bs auth
    ```
 3. You might need these info for the authentication.  
-
-```sh
 Step-mothur-downloader v1.0.0
 
 Client Id
-BASESPACE_CLIENT_ID
+<BASESPACE_CLIENT_ID>
 
 Client Secret
-BASESPACE_CLIENT_SECRET
+<BASESPACE_CLIENT_SECRET>
 
 Access Token
-BASESPACE_ACCESS_TOKEN
+<BASESPACE_ACCESS_TOKEN>
+
+Or use CIMS BaseSpace account credentials to log in.
 
 Or use CIMS basespace account credentials to log in  
-```
+
 
 ### 2. `bscli_fq_downloader_cron.py`
 
